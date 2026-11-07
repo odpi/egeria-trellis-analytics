@@ -104,6 +104,10 @@ def purpose_warnings(manifest: _TrellisManifest, known: list[str]) -> list[str]:
 
 class RoutineManifest(_TrellisManifest):
     kind: Literal["routine"] = "routine"
+    #: What the routine's results are (0.4): the library's full `Declaration`, narrowing pyegeria's
+    #: `AnalyticDeclaration`, as on a step. The routine's call shape (inputs, params, bindings) is its
+    #: `routine.RoutineDeclaration`, read from this manifest by `routine.routine_declaration`.
+    declaration: Declaration | None = None
 
 
 #: What a step may ask of the resource it measures (owner ruling 2026-10-07): nothing, or read-only. Anything

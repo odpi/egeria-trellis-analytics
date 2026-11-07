@@ -26,9 +26,10 @@ Definitions (a database), all derived from persisted rows, never from the branch
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from trellis_analytics import __version__
+from trellis_analytics.declaration import Declaration, register_shape
 from trellis_analytics.envelope import Envelope, ResultState
 from trellis_analytics.readers import CATALOGUE_SCOPE, CatalogueScopeRead, OdsRead, OdsUnreadable, ReaderMissing, open_reader
 
@@ -67,6 +68,24 @@ class CoverageResult(BaseModel):
     outside_node_set: list[str] = Field(default_factory=list)   # have a choice or proof but are not in the node set
     groups: list[Group] = Field(default_factory=list)
     summary: str = ""
+
+    # The aggregate's two numbers (0.4, BRIEF RS-W2-1b): what the tile charts, now fields of the result so the
+    # declaration's measures name them. None when the result has no counts (not established, not applicable): an
+    # absence, never a zero.
+    @computed_field
+    @property
+    def published_schemas(self) -> int | None:
+        """Known schemas whose newest state proof says they are in Egeria."""
+        return self.count("published", "schemas") if self.groups else None
+
+    @computed_field
+    @property
+    def not_yet_schemas(self) -> int | None:
+        """Known schemas neither published nor blocked (the routine's own partition: every known schema is one of the
+        three)."""
+        if not self.groups:
+            return None
+        return self.known_schemas - self.count("published", "schemas") - self.count("blocked", "blocked")
 
     def group(self, key: str) -> Group:
         return next(g for g in self.groups if g.key == key)
@@ -268,3 +287,62 @@ def curation_coverage(ods: OdsRead, resource_type: str, slug: str,
                    groups=[Group(key="published", words=pub_words, lines=pub_lines),
                            Group(key="not_yet", words=ny_words, lines=not_yet_lines),
                            Group(key="blocked", words=bl_words, lines=blocked_lines)])
+
+
+# ── what the routine declares (0.4, BRIEF RS-W2-1b) ──────────────────────────────────────────────────────────────
+
+def _f(name, label, type_="string", **kw) -> dict:
+    return {"name": name, "label": label, "type": type_, **kw}
+
+
+#: One counted line: a count with the row ids it counts.
+register_shape("CountLine", {"fields": [
+    _f("key", "Key"), _f("label", "Label"), _f("count", "Count", "int"),
+    _f("rows", "Rows counted", "map<string,list<int>>"),         # table -> the ids counted
+    _f("names", "Names", "list<string>"),
+    _f("family", "Family"),                                      # in_other_family only
+]})
+#: A group of lines (published | not_yet | blocked) with its sentence.
+register_shape("CountGroup", {"fields": [
+    _f("key", "Key"), _f("words", "Words"),
+    {"name": "lines", "label": "Lines", "kind": "dataset", "shape": "CountLine"},
+]})
+#: What `curation_coverage` returns (`CoverageResult.to_dict()`), field by field.
+register_shape("CoverageResult", {"fields": [
+    _f("resource_type", "Resource type"), _f("slug", "Resource"),
+    _f("envelope", "Envelope", "object"),
+    _f("as_of", "Read back at"),                                 # '' when Egeria was never read back
+    _f("known_schemas", "Schemas known to RE", "int"),
+    _f("known", "Known schemas", "list<string>"),
+    _f("counted_against", "Counted against", "object"),          # the node set's chosen / egeria / local / disagree
+    _f("outside_node_set", "Outside the node set", "list<string>"),
+    {"name": "groups", "label": "Groups", "kind": "dataset", "shape": "CountGroup"},
+    _f("summary", "Summary"),
+    _f("published_schemas", "Published", "int"),
+    _f("not_yet_schemas", "Not yet published", "int"),
+]})
+
+_BASIS = {"denominator_field": "known_schemas", "denominator_label": "schemas known to RE"}
+
+#: What the results are: two counts of schemas, each of the schemas Curate shows.
+DECLARATION = Declaration(
+    result_kind="measure",
+    scope="resource",
+    measures=[
+        {"name": "published", "unit": "schemas", "as_of": "as_of", "value_field": "published_schemas",
+         "basis": _BASIS},
+        {"name": "not_yet_published", "unit": "schemas", "as_of": "as_of", "value_field": "not_yet_schemas",
+         "basis": _BASIS},
+    ],
+    absence={
+        "not_measured": "Curation coverage could not be read: RE's registry did not answer, a reader it needs is not "
+                        "installed here, or no survey has told RE of any of this database's schemas.",
+        "not_permitted": "Curation coverage reads RE's own registry with no per-viewer check, so it is never withheld "
+                         "from one viewer; if you see this, the registry refused the read.",
+        "not_applicable": "Curation coverage is measured for databases only; this resource has no curation record it "
+                          "reads.",
+        "nothing_found": "Nothing of this database is published yet and no scope choice has been made: every schema RE "
+                         "knows is not yet published.",
+    },
+    out="CoverageResult",
+)

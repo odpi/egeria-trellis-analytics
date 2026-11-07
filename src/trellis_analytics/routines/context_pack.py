@@ -25,6 +25,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from trellis_analytics import __version__
+from trellis_analytics.declaration import Declaration, register_shape
 from trellis_analytics.envelope import Envelope, ResultState
 from trellis_analytics.readers.egeria import Element, PackReader, PackReaderError, Related
 
@@ -517,3 +518,52 @@ def _manifest(inv: _Inventory, consumer_kind: str, identity: str, as_of: str) ->
     lines.append("Identity: " + ident)
     return PackManifest(name=inv.db.name, consumer_kind=consumer_kind, version=PACK_VERSION, as_of=as_of, built_for=identity,
                         included=included, left_out=left, identity_note=ident, text="\n".join(lines))
+
+
+# ── what the routine declares (0.4, BRIEF RS-W2-1b) ──────────────────────────────────────────────────────────────
+
+def _f(name, label, type_="string", **kw) -> dict:
+    return {"name": name, "label": label, "type": type_, **kw}
+
+
+#: One table of the pack (`TableRow`). Each fact is a `Fact` object (state, value, reason, note, provenance), carried
+#: whole: its state says whether there is a value.
+register_shape("ContextPackTable", {"fields": [
+    _f("schema_name", "Schema"), _f("table", "Table"), _f("qualified_name", "Qualified name"),
+    _f("element_guid", "Element GUID", "guid"),
+    _f("columns", "Columns", "object"),
+    _f("column_names", "Column names", "list<string>"),
+    _f("column_detail", "Column detail", "list<object>"),
+    *[_f(n, label, "object") for n, label in (("rows", "Rows"), ("size_bytes", "Size"), ("populated", "Populated"),
+                                              ("term", "Glossary term"), ("owner", "Owner"), ("licence", "Licence"),
+                                              ("lineage", "Lineage"))],
+    _f("notes", "Notes", "list<string>"),
+]})
+#: What `context_pack` returns (`ContextPack.to_dict()`).
+register_shape("ContextPack", {"fields": [
+    _f("subject", "Subject"), _f("subject_guid", "Subject GUID"),        # '' when Egeria holds no such database
+    _f("consumer_kind", "Consumer kind"), _f("identity", "Read as"), _f("version", "Pack version"),
+    _f("as_of", "Built at"),
+    _f("envelope", "Envelope", "object"),
+    {"name": "tabular", "label": "Tables", "kind": "dataset", "shape": "ContextPackTable"},
+    _f("documents", "Documents", "list<object>"),
+    _f("manifest", "Manifest", "object"),
+    _f("notes", "Notes", "list<string>"),
+]})
+
+#: What the results are: the database's tables, one item each, with what Egeria holds about them.
+DECLARATION = Declaration(
+    result_kind="list",
+    scope="resource",
+    measures=[{"name": "tables", "unit": "tables", "as_of": "as_of", "value_field": "tabular[]"}],
+    listing={"item_fields": ["schema_name", "table", "qualified_name"], "order": "by schema name, then table name",
+             "key_field": "qualified_name", "item_label": "tables"},
+    absence={
+        "not_measured": "Egeria could not be read as the identity the pack is for, so no pack was built.",
+        "not_permitted": "The identity the pack is for may not read this database in Egeria; the pack carries nothing "
+                         "that identity could not read.",
+        "not_applicable": "A context pack is built for a database; this subject is not one.",
+        "nothing_found": "Egeria, read as the pack's identity, holds no database by that name, so the pack is empty.",
+    },
+    out="ContextPack",
+)

@@ -92,9 +92,10 @@ POPULATIONS = ("viewer", "repository")
 #: of another shape (master-detail).
 FIELD_KINDS = ("data", "cell", "representation", "dataset")
 
-#: The plain field types. `list<T>` and `map<string,T>` take one of these as T; `representation/<format>` is a
-#: representation field's type.
-FIELD_TYPES = ("string", "int", "float", "fraction", "bool", "datetime", "guid")
+#: The plain field types. `list<T>` and `map<string,T>` take one of these as T, and since 0.4 `map<string,list<T>>`
+#: (a reader's "status -> row ids"); `representation/<format>` is a representation field's type. `object` (0.4) is a
+#: JSON object the shape does not describe further: carried and shown as it is, never pathed into by a declaration.
+FIELD_TYPES = ("string", "int", "float", "fraction", "bool", "datetime", "guid", "object")
 
 #: The companions a value cell may carry (§5 table). `population` is §9.23's count population (see `POPULATIONS`).
 CELL_COMPANIONS = ("state", "completeness", "uncertainty", "unit", "as_of", "basis", "provenance", "score",
@@ -235,6 +236,17 @@ class MeasureDeclaration(_Strict):
     #: The spread of the value (§5 `uncertainty`), declared with its form; never on an exact count, whose only
     #: uncertainty is its completeness.
     uncertainty: "UncertaintyDeclaration | None" = None
+    #: The population this measure counts in (`POPULATIONS`; 0.4), for a measure that always counts in one: `viewer`
+    #: (what the caller may see) or `repository` (every row, no visibility check). Empty: not declared, or the
+    #: population is a parameter (then each cell says it, companion `population`).
+    population: str = ""
+
+    @field_validator("population")
+    @classmethod
+    def _population(cls, v: str) -> str:
+        if v and v not in POPULATIONS:
+            raise ValueError(f"population '{v}' is not one of the populations ({', '.join(POPULATIONS)})")
+        return v
 
     @model_validator(mode="before")
     @classmethod
@@ -630,7 +642,8 @@ MemberStates = register_state_set("MemberStates", ("measured", "not_measured", "
 # ── fields and shapes (§5) ──────────────────────────────────────────────────────────────────────────────────────
 
 _SCALAR = "|".join(FIELD_TYPES)
-_TYPE_PATTERN = re.compile(rf"(?:{_SCALAR})|list<(?:{_SCALAR})>|map<\s*string\s*,\s*(?:{_SCALAR})\s*>|"
+_TYPE_PATTERN = re.compile(rf"(?:{_SCALAR})|list<(?:{_SCALAR})>|"
+                           rf"map<\s*string\s*,\s*(?:(?:{_SCALAR})|list<(?:{_SCALAR})>)\s*>|"
                            r"representation/[A-Za-z0-9_.-]+")
 
 
@@ -665,6 +678,8 @@ class Field(_Strict):  # noqa: F811 (pydantic's Field is imported as _Default)
     #: A table's `cell` column only: the measure the column is the per-member value of. Required there (the absence
     #: sentence comes from the measure), ignored on any other field.
     measure: str = ""
+    #: What the field holds, in words, where its label does not say it (0.4).
+    description: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -693,10 +708,11 @@ class Field(_Strict):  # noqa: F811 (pydantic's Field is imported as _Default)
             if _words(self.shape):
                 raise ValueError(f"{label} names a shape and is a '{self.kind}' field: a shape belongs to a dataset")
             if not _words(self.type):
-                raise ValueError(f"{label} declares no type ({', '.join(FIELD_TYPES)}, list<T>, map<string,T>)")
+                raise ValueError(f"{label} declares no type ({', '.join(FIELD_TYPES)}, list<T>, map<string,T>, "
+                                 "map<string,list<T>>)")
             if not _TYPE_PATTERN.fullmatch(self.type):
                 raise ValueError(f"{label} type '{self.type}' is not a field type ({', '.join(FIELD_TYPES)}, "
-                                 "list<T>, map<string,T>, representation/<format>)")
+                                 "list<T>, map<string,T>, map<string,list<T>>, representation/<format>)")
             is_rep = self.type.startswith("representation/")
             if is_rep != (self.kind == "representation"):
                 raise ValueError(f"{label} is a '{self.kind}' field of type '{self.type}': a representation field, "
@@ -1144,6 +1160,12 @@ class Declaration(_Strict):
     #: The `list` kind's block (named so it does not shadow the builtin inside this class).
     listing: ListDeclaration | None = None
     table: TableDeclaration | None = None
+    #: What the result IS, field by field (§5; 0.4, BRIEF RS-W2-1b): a registered shape's name (`SHAPES`), an inline
+    #: `Shape`, or a list of fields. A renderer reads the result through it (`render.kpi_tile`), and a resolver checks a
+    #: spec's columns against it. Absent: the result's fields are not declared yet (a 0.3 declaration). When declared,
+    #: every field a measure names (`value_field`, `as_of`, `basis.denominator_field`, `completeness_field`; the first
+    #: part of a dotted path) is a field of `out`, so a measure cannot point at a field the result does not have.
+    out: "Shape | list[Field] | str | None" = None
 
     @field_validator("result_kind")
     @classmethod
@@ -1172,6 +1194,8 @@ class Declaration(_Strict):
         self._kind_blocks()
         if self.table is not None:
             self._table()
+        if self.out is not None:
+            self._out()
         names = [m.name for m in self.measures]
         twice = sorted({n for n in names if names.count(n) > 1})
         if twice:
@@ -1261,6 +1285,40 @@ class Declaration(_Strict):
                              "its fields, max_rows, order and truncation, so leave extents out")
         self.extents = [derived]
 
+    def _out(self) -> None:
+        """`out` resolves (a named shape is registered; no field twice), and each measure's fields are among its fields."""
+        if isinstance(self.out, str) and self.out not in SHAPES:
+            raise ValueError(f"out names shape '{self.out}', which is not registered")
+        listed = [f.name for f in self.out_fields()]
+        twice = sorted({n for n in listed if listed.count(n) > 1})
+        if twice:
+            raise ValueError(f"out declares field {', '.join(twice)} more than once")
+        names = set(listed)
+        if not names:
+            raise ValueError("out declares no fields: name the fields the result carries, or leave out out")
+        for m in self.measures:
+            refs = [("value_field", m.value_field), ("as_of", m.as_of), ("completeness_field", m.completeness_field)]
+            if m.basis is not None:
+                refs.append(("basis.denominator_field", m.basis.denominator_field))
+            for where, path in refs:
+                head = _path_head(path)
+                if not head or (where == "as_of" and head == "run"):
+                    continue
+                if head not in names:
+                    raise ValueError(f"measure '{m.name}' {where} '{path}' names '{head}', which is not a field of out "
+                                     f"({', '.join(sorted(names))})")
+
+    def out_fields(self) -> list[Field]:
+        """`out`'s fields in order, resolved (a shape's parents and includes first); [] when `out` is not declared."""
+        if self.out is None:
+            return []
+        if isinstance(self.out, list):
+            return list(self.out)
+        return [f for _, f in resolve_fields(self.out)]
+
+    def out_field(self, name: str) -> Field | None:
+        return next((f for f in self.out_fields() if f.name == name), None)
+
     def is_table_result(self) -> bool:
         """Is this a table result (B1): a member- or field-scoped table that owes nothing? Only a table result stores
         its rows, draws the table block, publishes its summary alone and quotes its stored rows."""
@@ -1303,6 +1361,11 @@ class Declaration(_Strict):
 
 MeasureDeclaration.model_rebuild()
 Declaration.model_rebuild()
+
+
+def _path_head(path: str) -> str:
+    """The field a dotted path starts at: "counts.stale" -> "counts", "columns_added[]" -> "columns_added"."""
+    return _words(path).split(".", 1)[0].removesuffix("[]")
 
 
 def refusal(exc: Exception) -> str:

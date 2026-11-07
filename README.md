@@ -46,7 +46,10 @@ For people who use the results, not write them: see the "Analytic Library" secti
 | `trellis_analytics.readers.ods`, `.registry_view` | RE's implementations of `OdsRead` and `CatalogueScopeRead`: read-only access to RE's registry (a SQLite file or Postgres). They stay with RE when the library leaves trellis (LS2). |
 | `trellis_analytics.routines.curation_coverage` | Published, not yet published and blocked, counted from RE's curation record. |
 | `trellis_analytics.routines.context_pack` | Packages what Egeria holds about one database for one kind of consumer, each fact with a state word and provenance. |
-| `trellis_analytics.portal` | The Portal tile for `curation_coverage`. |
+| `trellis_analytics.portal` | The Portal tile for `curation_coverage` (`curation_coverage_kpi`, registered as `curation_coverage_tile`). |
+| `trellis_analytics.render` | Renderers: `kpi_tile`, the KPI tile drawn from a routine's declaration and its result (0.4). |
+| `trellis_analytics.routine` | `RoutineDeclaration`: how a routine is called (inputs, params, constants, bindings, tile_safe, admission) beside what it returns; `ReaderDeclaration` (0.4). |
+| `trellis_analytics.readers.shapes` | The registered shapes of what the seam's readers yield, read by read (0.4). |
 | `trellis_analytics.step` | `SurveyStep`, the wrapper that runs a user's step code (see below). |
 | `trellis_analytics.declaration` | `Declaration`: what an analysis says about its results (kind, measures, absence sentences, extents, confidence, table), and the 0.3 vocabulary (see "The vocabulary" below). |
 | `trellis_analytics.declare` | `manifest_properties`: what a step's Egeria declaration says about it, from its manifest. The declaration itself is RE's engine host's (see "Dispatched by Egeria" below). |
@@ -171,6 +174,20 @@ A 0.3 table owes its key, truncation, order and summary
 
 `TableDeclaration.fields()` (the key, then the rest) is now `fields_in_order()`, because `fields` is the inline field
 list.
+
+## Declared shapes and routines (0.4)
+
+A declaration may say what its result **is**: `Declaration.out`, a registered shape (or inline fields). The measures'
+fields must then be fields of `out`, so a measure cannot name a field the result lacks. A `RoutineDeclaration`
+(`trellis_analytics.routine`) adds how the routine is called: role inputs, params, constants, bindings, `tile_safe`
+and admission. pyegeria mirrors this schema without importing the library. `routine_declaration(manifest)` reads a
+manifest (or pyegeria's `AnalyticFunctionSpec`) as one. This package's three routines are declared in
+`manifests.ROUTINES`.
+
+The first renderer is `render.kpi_tile(routine, result, function=...)`, format `KPI`. It reads the envelope, the
+`summary`, a `groups` dataset of shape `CountGroup`, and one top-level number per measure, keyed by its `out` field's
+label, only when the state has counts. The Portal's curation-coverage tile is now rendered this way; nothing builds it
+by hand.
 
 ## Writing a routine
 

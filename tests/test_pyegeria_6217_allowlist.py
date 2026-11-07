@@ -28,10 +28,10 @@ def test_an_unregistered_path_outside_the_prefixes_is_refused(monkeypatch):
 
 def test_a_registered_name_resolves_to_the_tile_function(monkeypatch):
     """Q2(b): the tile's report spec names `curation_coverage_tile`, which resolves to the function its manifest
-    declares, with no allowlist involved."""
+    declares (since 0.4 `curation_coverage_kpi`, the tile rendered from the declaration), with no allowlist involved."""
     monkeypatch.setenv("PYEGERIA_ANALYTIC_MODULE_PREFIXES", "nothing_allowed")
-    from trellis_analytics.portal import curation_coverage_tile
-    assert fse._resolve_analytic_function(TILE_FUNCTION) is curation_coverage_tile
+    from trellis_analytics.portal import curation_coverage_kpi
+    assert fse._resolve_analytic_function(TILE_FUNCTION) is curation_coverage_kpi
 
 
 def test_every_report_spec_the_library_ships_names_a_registered_function():
